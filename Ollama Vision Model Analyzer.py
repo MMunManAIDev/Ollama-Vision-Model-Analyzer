@@ -18,32 +18,86 @@ import os
 import threading
 from PIL import Image, ImageTk
 
+# Try to import drag and drop support
+try:
+    from tkinterdnd2 import DND_FILES, TkinterDnD
+    DND_AVAILABLE = True
+except ImportError:
+    DND_AVAILABLE = False
+
 
 class VisionModelGUI:
     def __init__(self, root):
         self.root = root
         self.root.title("Ollama Vision Model Analyzer")
-        self.root.geometry("800x700")
+        self.root.geometry("750x700")  # Reduced width by 50 pixels
         self.root.configure(bg='#f0f0f0')
         
         # Initialize Ollama client - try different connection methods
         self.client = None
         self.selected_image_path = None
         self.model_names = []  # Store actual model names separately from display names
+        self.successful_connection = None  # Store successful connection parameters
         
         self.setup_ui()
+        self.setup_drag_and_drop()
         self.initialize_ollama_client()
         
     def setup_ui(self):
         """Create the user interface"""
-        # Main container
-        main_frame = ttk.Frame(self.root, padding="20")
-        main_frame.grid(row=0, column=0, sticky=(tk.W, tk.E, tk.N, tk.S))
-        
-        # Configure grid weights
+        # Configure root grid
         self.root.columnconfigure(0, weight=1)
         self.root.rowconfigure(0, weight=1)
+        
+        # Create main container frame
+        container = ttk.Frame(self.root)
+        container.grid(row=0, column=0, sticky=(tk.W, tk.E, tk.N, tk.S), padx=10, pady=10)
+        container.columnconfigure(0, weight=1)
+        container.rowconfigure(0, weight=1)
+        
+        # Create a canvas and scrollbar for scrolling
+        canvas = tk.Canvas(container, bg='#f0f0f0', highlightthickness=0)
+        scrollbar = ttk.Scrollbar(container, orient="vertical", command=canvas.yview)
+        scrollable_frame = ttk.Frame(canvas)
+        
+        scrollable_frame.bind(
+            "<Configure>",
+            lambda e: canvas.configure(scrollregion=canvas.bbox("all"))
+        )
+        
+        canvas_window = canvas.create_window((0, 0), window=scrollable_frame, anchor="nw")
+        canvas.configure(yscrollcommand=scrollbar.set)
+        
+        # Grid canvas and scrollbar
+        canvas.grid(row=0, column=0, sticky=(tk.W, tk.E, tk.N, tk.S))
+        scrollbar.grid(row=0, column=1, sticky=(tk.N, tk.S))
+        
+        # Main content frame
+        main_frame = ttk.Frame(scrollable_frame, padding="10")
+        main_frame.grid(row=0, column=0, sticky=(tk.W, tk.E, tk.N, tk.S))
+        
+        # Configure grid weights for main frame
         main_frame.columnconfigure(1, weight=1)
+        
+        # Bind canvas resize to adjust window width
+        def configure_canvas_width(event):
+            canvas_width = event.width
+            canvas.itemconfig(canvas_window, width=canvas_width)
+        
+        canvas.bind('<Configure>', configure_canvas_width)
+        
+        # Bind mousewheel to canvas for scrolling
+        def _on_mousewheel(event):
+            canvas.yview_scroll(int(-1*(event.delta/120)), "units")
+        
+        def bind_mousewheel(event):
+            canvas.bind_all("<MouseWheel>", _on_mousewheel)
+        
+        def unbind_mousewheel(event):
+            canvas.unbind_all("<MouseWheel>")
+        
+        canvas.bind('<Enter>', bind_mousewheel)
+        canvas.bind('<Leave>', unbind_mousewheel)
         
         # Title
         title_label = ttk.Label(main_frame, text="🖼️ Ollama Vision Model Analyzer", 
@@ -77,12 +131,14 @@ class VisionModelGUI:
         browse_btn.grid(row=0, column=1, padx=(10, 0))
         
         # Image preview
-        self.preview_frame = ttk.LabelFrame(main_frame, text="Image Preview", padding="10")
+        preview_title = "Image Preview (drag & drop here)" if DND_AVAILABLE else "Image Preview"
+        self.preview_frame = ttk.LabelFrame(main_frame, text=preview_title, padding="10")
         self.preview_frame.grid(row=3, column=0, columnspan=3, sticky=(tk.W, tk.E), pady=10)
         self.preview_frame.columnconfigure(0, weight=1)
         
-        self.preview_label = ttk.Label(self.preview_frame, text="No image selected", 
-                                      foreground="gray")
+        preview_text = "No image selected\nDrag & drop an image here or use Browse..." if DND_AVAILABLE else "No image selected\nUse Browse... to select an image"
+        self.preview_label = ttk.Label(self.preview_frame, text=preview_text, 
+                                      foreground="gray", justify="center")
         self.preview_label.grid(row=0, column=0)
         
         # Prompt input
@@ -119,6 +175,54 @@ class VisionModelGUI:
                              command=self.copy_response)
         copy_btn.grid(row=1, column=0, pady=(10, 0))
     
+    def setup_drag_and_drop(self):
+        """Setup drag and drop functionality for image files"""
+        if not DND_AVAILABLE:
+            # Update preview text to indicate drag and drop is not available
+            self.preview_label.configure(text="No image selected\nUse Browse... to select an image")
+            return
+        
+        def drop_enter(event):
+            self.preview_frame.configure(relief="solid")
+            return "copy"
+        
+        def drop_leave(event):
+            self.preview_frame.configure(relief="groove")
+            return "copy"
+        
+        def drop(event):
+            self.preview_frame.configure(relief="groove")
+            
+            # Get the dropped files
+            files = self.root.tk.splitlist(event.data)
+            if files:
+                file_path = files[0]
+                
+                # Check if it's an image file
+                valid_extensions = ('.jpg', '.jpeg', '.png', '.gif', '.bmp', '.tiff')
+                if file_path.lower().endswith(valid_extensions):
+                    self.selected_image_path = file_path
+                    display_name = os.path.basename(file_path)
+                    self.image_path_var.set(display_name)
+                    self.image_label.configure(foreground="black")
+                    self.show_image_preview(file_path)
+                else:
+                    messagebox.showerror("Invalid File", 
+                                       "Please drop a valid image file (JPG, PNG, GIF, BMP, TIFF)")
+            return "copy"
+        
+        # Enable drag and drop
+        self.preview_frame.drop_target_register(DND_FILES)
+        self.preview_frame.dnd_bind("<<DropEnter>>", drop_enter)
+        self.preview_frame.dnd_bind("<<DropLeave>>", drop_leave)
+        self.preview_frame.dnd_bind("<<Drop>>", drop)
+        
+        # Also enable on the preview label
+        self.preview_label.drop_target_register(DND_FILES)
+        self.preview_label.dnd_bind("<<DropEnter>>", drop_enter)
+        self.preview_label.dnd_bind("<<DropLeave>>", drop_leave)
+        self.preview_label.dnd_bind("<<Drop>>", drop)
+    
     def initialize_ollama_client(self):
         """Initialize Ollama client with different connection attempts"""
         connection_attempts = [
@@ -137,6 +241,7 @@ class VisionModelGUI:
                 
                 # Test the connection by trying to list models
                 models = self.client.list()
+                self.successful_connection = host  # Store successful connection
                 self.update_status(f"✅ Connected via {description}")
                 self.load_available_models()
                 return
@@ -147,6 +252,7 @@ class VisionModelGUI:
         
         # If all attempts failed
         self.client = None
+        self.successful_connection = None
         error_msg = ("Could not connect to Ollama server.\n\n"
                     "Troubleshooting:\n"
                     "1. Make sure 'ollama serve' is running\n"
@@ -189,13 +295,11 @@ class VisionModelGUI:
                         model_name = str(model)
                     
                     if model_name:
-                        # Add indicator for likely vision models
+                        # Check if it's likely a vision model for sorting
                         is_vision = any(indicator in model_name.lower() for indicator in vision_indicators)
-                        display_name = f"📷 {model_name}" if is_vision else f"📝 {model_name}"
                         
                         all_models.append({
                             'name': model_name,
-                            'display': display_name,
                             'is_vision': is_vision
                         })
                             
@@ -206,26 +310,25 @@ class VisionModelGUI:
             # Sort models with vision models first
             all_models.sort(key=lambda x: (not x['is_vision'], x['name']))
             
-            # Set up the dropdown
-            model_displays = [model['display'] for model in all_models]
-            self.model_names = [model['name'] for model in all_models]  # Keep actual names separate
+            # Set up the dropdown with plain model names
+            model_names = [model['name'] for model in all_models]
+            self.model_names = model_names  # Store actual names
             
-            self.model_combo['values'] = model_displays
+            self.model_combo['values'] = model_names
             
             if all_models:
                 # Select first vision model if available, otherwise first model
                 vision_models = [i for i, model in enumerate(all_models) if model['is_vision']]
                 selected_index = vision_models[0] if vision_models else 0
-                self.model_combo.set(model_displays[selected_index])
+                self.model_combo.set(model_names[selected_index])
                 
-                vision_count = len(vision_models)
                 total_count = len(all_models)
-                self.update_status(f"✅ Found {total_count} model(s) ({vision_count} vision models)")
+                self.update_status(f"✅ Found {total_count} model(s)")
             else:
                 self.update_status("❌ No models found")
                 messagebox.showwarning("No Models", 
                                      "No models found in Ollama.\n\n"
-                                     "Install a vision model with:\n"
+                                     "Install a model with:\n"
                                      "ollama pull llava:7b\n"
                                      "ollama pull qwen2.5-coder:7b\n"
                                      "ollama pull moondream")
@@ -241,6 +344,25 @@ class VisionModelGUI:
     def refresh_connection(self):
         """Refresh the Ollama connection and reload models"""
         self.update_status("🔄 Refreshing connection...")
+        
+        # If we have a known successful connection, try that first
+        if self.successful_connection:
+            try:
+                if self.successful_connection:
+                    self.client = ollama.Client(host=self.successful_connection)
+                else:
+                    self.client = ollama.Client()
+                
+                # Test the connection
+                models = self.client.list()
+                self.update_status("✅ Reconnected successfully")
+                self.load_available_models()
+                return
+                
+            except Exception as e:
+                self.update_status(f"❌ Previous connection failed, trying all methods...")
+        
+        # If previous connection failed or we don't have one, try all methods
         self.initialize_ollama_client()
     
     def browse_image(self):
@@ -271,8 +393,8 @@ class VisionModelGUI:
             # Open and resize image for preview
             image = Image.open(image_path)
             
-            # Calculate size to fit in preview area (max 200x200)
-            image.thumbnail((200, 200), Image.Resampling.LANCZOS)
+            # Calculate size to fit in preview area (max 150x150 to save space)
+            image.thumbnail((150, 150), Image.Resampling.LANCZOS)
             
             # Convert to PhotoImage
             photo = ImageTk.PhotoImage(image)
@@ -322,10 +444,8 @@ class VisionModelGUI:
             with open(self.selected_image_path, 'rb') as image_file:
                 image_base64 = base64.b64encode(image_file.read()).decode('utf-8')
             
-            # Get the actual model name (not the display name with icon)
-            selected_display = self.model_var.get().strip()
-            selected_index = list(self.model_combo['values']).index(selected_display)
-            selected_model = self.model_names[selected_index]
+            # Get the selected model name directly
+            selected_model = self.model_var.get().strip()
             
             print(f"DEBUG - Using model: '{selected_model}' (type: {type(selected_model)})")
             
@@ -380,7 +500,10 @@ class VisionModelGUI:
 
 def main():
     """Main function to run the GUI application"""
-    root = tk.Tk()
+    if DND_AVAILABLE:
+        root = TkinterDnD.Tk()
+    else:
+        root = tk.Tk()
     
     # Set up modern theme if available
     try:
