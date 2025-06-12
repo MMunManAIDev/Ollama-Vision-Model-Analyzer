@@ -30,7 +30,7 @@ class VisionModelGUI:
     def __init__(self, root):
         self.root = root
         self.root.title("Ollama Vision Model Analyzer")
-        self.root.geometry("750x700")  # Reduced width by 50 pixels
+        self.root.geometry("600x700")  # Reduced width by 50 pixels
         self.root.configure(bg='#f0f0f0')
         
         # Initialize Ollama client - try different connection methods
